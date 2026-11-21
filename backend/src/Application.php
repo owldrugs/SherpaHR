@@ -61,7 +61,10 @@ final class Application
         if (preg_match('#^/api/projects/(\d+)/tasks$#', $path, $match)) {
             $project = $this->project((int) $match[1]);
             if ($method === 'GET') {
-                $this->respond($this->all('SELECT t.* FROM tasks t JOIN users u ON u.id=t.assignee_id WHERE t.project_id=? ORDER BY t.id', [$project['id']]));
+                $this->respond($this->all(
+                    'SELECT t.* FROM tasks t WHERE t.project_id=? ORDER BY t.id',
+                    [$project['id']]
+                ));
                 return;
             }
             if ($method === 'POST') {
@@ -101,9 +104,40 @@ final class Application
         if ($method === 'POST' && preg_match('#^/api/tasks/(\d+)/comments$#', $path, $match)) {
             $task = $this->task((int) $match[1]);
             $this->writable($this->project($task['project_id']));
+
             $data = $this->input();
-            $this->text($data['body'] ?? null, 'Комментарий', 5000, true);
-            throw new ApiError('Добавление комментариев пока не реализовано', 501);
+            $body = $this->text(
+                $data['body'] ?? null,
+                'Комментарий',
+                5000,
+                true
+            );
+
+            $createdAt = gmdate('Y-m-d\TH:i:s\Z');
+
+            $stmt = $this->db->prepare(
+                'INSERT INTO comments (task_id, user_id, body, created_at) VALUES (?, ?, ?, ?)'
+            );
+
+            $stmt->execute([
+                $task['id'],
+                $this->userId,
+                $body,
+                $createdAt
+            ]);
+
+            $commentId = (int) $this->db->lastInsertId();
+
+            $comment = $this->one(
+                'SELECT c.*, u.name AS author
+                     FROM comments c
+                     JOIN users u ON u.id = c.user_id
+                     WHERE c.id = ?',
+                [$commentId]
+            );
+
+            $this->respond($comment, 201);
+            return;
         }
         throw new ApiError('Маршрут не найден', 404);
     }
