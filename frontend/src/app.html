@@ -85,7 +85,9 @@
               }
             </article>
           } @empty { <p class="muted">Истории обращений нет.</p> }
-          @if (!project()?.archived && task.status !== 'done') {
+          @if (hasOpenHelpRequest(task)) {
+            <p class="open-request-message">На эту задачу уже есть открытый запрос на помощь. Повторное обращение не требуется.</p>
+          } @else if (!project()?.archived && task.status !== 'done') {
             <form (ngSubmit)="createHelpRequest()">
               <label>Причина обращения<textarea name="helpReason" [(ngModel)]="helpReason" rows="3" required maxlength="5000" [disabled]="saving()"></textarea></label>
               <button type="submit" [disabled]="!helpReason.trim() || saving()">Запросить помощь</button>

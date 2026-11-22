@@ -437,6 +437,7 @@ fieldset {
 .help-history p { margin:8px 0; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
 .help-history small { display:block; color:#74808a; margin-bottom:8px; }
 .resolve-button { margin-top:4px; }
+.open-request-message { padding:10px 12px; border-radius:6px; background:#fff8f4; border:1px solid #f0bca6; color:#7a4a32; }
 .help-history form { margin-top:16px; }
 .comments {
   margin-top:30px;

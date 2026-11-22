@@ -244,6 +244,10 @@ export class AppComponent {
     } catch (error) { this.fail(error); }
   }
 
+  hasOpenHelpRequest(task: TaskDetail): boolean {
+    return task.help_requests.some(request => request.status === 'open');
+  }
+
   reasonLabel(reason: string): string {
     if (reason === 'open_request') return 'Запрос помощи';
     if (reason === 'blocked') return 'Заблокирована';

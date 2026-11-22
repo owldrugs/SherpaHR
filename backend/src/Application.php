@@ -68,10 +68,11 @@ final class Application
                 'SELECT t.*, p.name AS project_name, u.name AS assignee_name
                    FROM tasks t
                    JOIN projects p ON p.id=t.project_id
+                   JOIN project_members member ON member.project_id=p.id
                    LEFT JOIN users u ON u.id=t.assignee_id
-                  WHERE p.owner_id=? AND p.archived=0 AND t.status<>\'done\'
+                  WHERE p.owner_id=? AND member.user_id=? AND p.archived=0 AND t.status<>\'done\'
                   ORDER BY t.id',
-                [$this->userId]
+                [$this->userId, $this->userId]
             );
 
             $attention = [];
@@ -179,11 +180,12 @@ final class Application
                    FROM help_requests hr
                    JOIN tasks t ON t.id=hr.task_id
                    JOIN projects p ON p.id=t.project_id
+                   JOIN project_members member ON member.project_id=p.id
                    JOIN users u ON u.id=hr.user_id
                    LEFT JOIN users ru ON ru.id=hr.resolved_by
-                  WHERE hr.status=\'open\' AND p.owner_id=? AND p.archived=0
+                  WHERE hr.status=\'open\' AND p.owner_id=? AND member.user_id=? AND p.archived=0
                   ORDER BY hr.created_at DESC, hr.id DESC',
-                [$this->userId]
+                [$this->userId, $this->userId]
             );
             $this->respond($requests);
             return;
@@ -195,8 +197,9 @@ final class Application
                    FROM help_requests hr
                    JOIN tasks t ON t.id=hr.task_id
                    JOIN projects p ON p.id=t.project_id
-                  WHERE hr.id=?',
-                [$requestId]
+                   JOIN project_members member ON member.project_id=p.id
+                  WHERE hr.id=? AND member.user_id=?',
+                [$requestId, $this->userId]
             );
             if (!$request || (int) $request['owner_id'] !== $this->userId || (bool) $request['archived']) {
                 throw new ApiError('Запрос на помощь не найден', 404);

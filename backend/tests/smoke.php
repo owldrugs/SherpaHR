@@ -138,6 +138,21 @@ try {
     check($status === 200 && count($response['data']['help_requests']) === 2, 'task detail preserves help-request history');
     check(request('GET', '/api/help-requests', null, 3)[0] === 200, 'non-owner gets an access-filtered empty queue');
 
+    $fixtureDb = new PDO('sqlite:' . $directory . '/test.sqlite');
+    $fixtureDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $fixtureDb->exec("INSERT INTO projects (id,name,description,owner_id,archived) VALUES (6,'Проект без членства владельца','Регрессионный проект',1,0)");
+    $fixtureDb->exec("INSERT INTO tasks (project_id,title,description,status,assignee_id,due_at,updated_at) VALUES (6,'Недоступная задача владельца','Нет записи project_members','blocked',2,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')");
+    $noMembershipTaskId = (int) $fixtureDb->query('SELECT last_insert_rowid()')->fetchColumn();
+    $fixtureDb->exec("INSERT INTO help_requests (task_id,user_id,reason,created_at,status) VALUES (" . $noMembershipTaskId . ",2,'Обращение в проекте без членства','2026-01-01T00:00:00Z','open')");
+    $noMembershipRequestId = (int) $fixtureDb->query('SELECT last_insert_rowid()')->fetchColumn();
+    $fixtureDb = null;
+
+    [$status, $noMembershipAttention] = request('GET', '/api/attention');
+    check($status === 200 && !in_array($noMembershipTaskId, array_column($noMembershipAttention['data'], 'task_id'), true), 'owner without project_members is excluded from attention');
+    [$status, $noMembershipQueue] = request('GET', '/api/help-requests');
+    check($status === 200 && !in_array($noMembershipTaskId, array_column($noMembershipQueue['data'], 'task_id'), true), 'owner without project_members is excluded from help-request queue');
+    check(request('POST', '/api/help-requests/' . $noMembershipRequestId . '/resolve', null, 1)[0] === 404, 'owner without project_members cannot resolve help request');
+
     $utcNow = new DateTimeImmutable(gmdate('Y-m-d\TH:i:s\Z'), new DateTimeZone('UTC'));
     $yesterday = $utcNow->modify('-1 day')->format('Y-m-d\TH:i:s\Z');
     $today = $utcNow->modify('+1 hour')->format('Y-m-d\TH:i:s\Z');
