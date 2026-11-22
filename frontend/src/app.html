@@ -20,6 +20,19 @@
   <main>
     @if (error()) { <div role="alert" class="alert error">{{error()}}</div> }
     @if (notice()) { <div role="status" class="alert success">{{notice()}}</div> }
+    @if (attention().length) {
+      <section class="attention" aria-label="Центр внимания">
+        <div class="queue-heading"><h2>Центр внимания <span>{{attention().length}}</span></h2></div>
+        @for (item of attention(); track item.task_id) {
+          <button class="attention-item" (click)="openAttentionItem(item)">
+            <div class="attention-main"><strong>{{item.project_name}}</strong><small>#{{item.task_id}} · {{item.title}}</small></div>
+            <div class="attention-meta"><span>{{item.assignee_name ?? 'Не назначен'}}</span><span>{{item.due_at ? (item.due_at | date:'dd.MM.yyyy HH:mm':'UTC') : 'Без срока'}}</span></div>
+            <div class="attention-reasons">@for (reason of item.reasons; track reason) { <span class="reason">{{reasonLabel(reason)}}</span> }</div>
+            @for (request of item.open_requests; track request.id) { <div class="attention-request"><strong>{{request.author}}</strong><p>{{request.reason}}</p></div> }
+          </button>
+        }
+      </section>
+    }
     @if (project(); as p) {
       <div class="breadcrumb">Проекты <span>/</span> {{p.archived ? 'Архив' : 'Рабочее пространство'}}</div>
       <div class="page-heading"><div><h1>{{p.name}}</h1><p>{{p.description}}</p></div>
@@ -59,6 +72,28 @@
         </fieldset>
       </form>
       @if (detail(); as task) {
+        <section class="help-history">
+          <h2>Запросы на помощь <span>{{task.help_requests.length}}</span></h2>
+          @for (request of task.help_requests; track request.id) {
+            <article [class.resolved]="request.status === 'resolved'">
+              <div><strong>{{request.author}}</strong><span class="badge" [class.done]="request.status === 'resolved'">{{request.status === 'open' ? 'Открыт' : 'Решён'}}</span></div>
+              <time>{{request.created_at | date:'dd.MM.yyyy HH:mm':'UTC'}}</time>
+              <p>{{request.reason}}</p>
+              @if (request.status === 'resolved') { <small>Решил: {{request.resolver ?? 'Неизвестно'}} · {{request.resolved_at | date:'dd.MM.yyyy HH:mm':'UTC'}}</small> }
+              @if (request.status === 'open' && api.userId === project()?.owner_id && !project()?.archived) {
+                <button type="button" class="resolve-button" [disabled]="saving()" (click)="resolveHelpRequest(request)">Отметить решённым</button>
+              }
+            </article>
+          } @empty { <p class="muted">Истории обращений нет.</p> }
+          @if (hasOpenHelpRequest(task)) {
+            <p class="open-request-message">На эту задачу уже есть открытый запрос на помощь. Повторное обращение не требуется.</p>
+          } @else if (!project()?.archived && task.status !== 'done') {
+            <form (ngSubmit)="createHelpRequest()">
+              <label>Причина обращения<textarea name="helpReason" [(ngModel)]="helpReason" rows="3" required maxlength="5000" [disabled]="saving()"></textarea></label>
+              <button type="submit" [disabled]="!helpReason.trim() || saving()">Запросить помощь</button>
+            </form>
+          }
+        </section>
         <section class="comments"><h2>Обсуждение <span>{{task.comments.length}}</span></h2>
           @for (c of task.comments; track c.id) { <article><strong>{{c.author}}</strong><time>{{c.created_at | date:'dd.MM.yyyy HH:mm':'UTC'}}</time><p>{{c.body}}</p></article> }
           @empty { <p class="muted">Комментариев пока нет.</p> }

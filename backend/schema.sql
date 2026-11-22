@@ -19,5 +19,18 @@ CREATE TABLE comments (
     id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL REFERENCES tasks(id),
     user_id INTEGER NOT NULL REFERENCES users(id), body TEXT NOT NULL, created_at TEXT NOT NULL
 );
+CREATE TABLE help_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES tasks(id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved')),
+    resolved_at TEXT,
+    resolved_by INTEGER REFERENCES users(id)
+);
+CREATE UNIQUE INDEX help_requests_one_open ON help_requests(task_id) WHERE status = 'open';
+CREATE INDEX help_requests_status ON help_requests(status, id);
+CREATE INDEX help_requests_task ON help_requests(task_id, id);
 CREATE INDEX tasks_project ON tasks(project_id);
 CREATE INDEX comments_task ON comments(task_id, id);

@@ -2,7 +2,7 @@ import { Component, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Api } from './api';
-import { Comment, Context, Project, Task, TaskDetail, TaskStatus } from './models';
+import { AttentionItem, Comment, Context, HelpRequest, HelpRequestQueueItem, Project, Task, TaskDetail, TaskStatus } from './models';
 
 @Component({
   selector: 'app-root',
@@ -17,6 +17,9 @@ export class AppComponent {
   project = signal<Project | null>(null);
   tasks = signal<Task[]>([]);
   detail = signal<TaskDetail | null>(null);
+  helpRequests = signal<HelpRequestQueueItem[]>([]);
+  attention = signal<AttentionItem[]>([]);
+  helpReason = '';
   loading = signal(false);
   saving = signal(false);
   error = signal('');
@@ -41,12 +44,17 @@ export class AppComponent {
     this.error.set('');
     this.closeDetail();
     try {
-      const [context, projects] = await Promise.all([
-        this.api.request<Context>('/context'), this.api.request<Project[]>('/projects'),
+      const [context, projects, helpRequests, attention] = await Promise.all([
+        this.api.request<Context>('/context'),
+        this.api.request<Project[]>('/projects'),
+        this.api.request<HelpRequestQueueItem[]>('/help-requests'),
+        this.api.request<AttentionItem[]>('/attention'),
       ]);
       if (generation !== this.generation) return;
       this.context.set(context);
       this.projects.set(projects);
+      this.helpRequests.set(helpRequests);
+      this.attention.set(attention);
       const project = projects.find(p => p.id === this.project()?.id) ?? projects[0];
       if (project) await this.selectProject(project);
     } catch (error) {
@@ -62,6 +70,9 @@ export class AppComponent {
     this.projects.set([]);
     this.tasks.set([]);
     this.context.set(null);
+    this.helpRequests.set([]);
+    this.attention.set([]);
+    this.helpReason = '';
     this.notice.set('');
     void this.load();
   }
@@ -101,6 +112,7 @@ export class AppComponent {
       if (generation !== this.detailGeneration) return;
       this.detail.set(detail);
       this.comment = '';
+      this.helpReason = '';
       this.draft = {
         title: detail.title, description: detail.description, status: detail.status,
         assignee_id: detail.assignee_id,
@@ -116,6 +128,7 @@ export class AppComponent {
     this.detail.set(null);
     this.creating.set(false);
     this.comment = '';
+    this.helpReason = '';
   }
 
   createTask(): void {
@@ -144,12 +157,13 @@ export class AppComponent {
       this.tasks.update(list => existing ? list.map(t => t.id === task.id ? task : t) : [...list, task]);
       if (generation === this.detailGeneration) {
         // Saving fields must not erase a comment the user has not sent yet.
-        this.detail.set({ ...task, comments: existing?.comments ?? [] });
+        this.detail.set({ ...task, comments: existing?.comments ?? [], help_requests: existing?.help_requests ?? [] });
         this.creating.set(false);
         this.draft = {
           title: task.title, description: task.description, status: task.status,
           assignee_id: task.assignee_id, due_at: task.due_at?.slice(0, 16) ?? '',
         };
+        void this.refreshAttention();
         this.notice.set('Задача сохранена');
       }
     } catch (error) { if (generation === this.detailGeneration) this.fail(error); }
@@ -171,6 +185,76 @@ export class AppComponent {
       this.notice.set('Комментарий добавлен');
     } catch (error) { if (generation === this.detailGeneration) this.fail(error); }
     finally { this.saving.set(false); }
+  }
+
+  async openAttentionItem(item: AttentionItem): Promise<void> {
+    const project = this.projects().find(p => p.id === item.project_id);
+    if (!project) return;
+    if (this.project()?.id !== project.id) await this.selectProject(project);
+    const task = this.tasks().find(t => t.id === item.task_id);
+    if (task) await this.openTask(task);
+  }
+
+  async createHelpRequest(): Promise<void> {
+    const task = this.detail();
+    if (!task || this.saving() || !this.helpReason.trim()) return;
+    const generation = this.detailGeneration;
+    this.saving.set(true);
+    this.error.set('');
+    try {
+      const request = await this.api.request<HelpRequest>(`/tasks/${task.id}/help-requests`, 'POST', { reason: this.helpReason });
+      if (generation !== this.detailGeneration) return;
+      this.detail.update(current => current ? { ...current, help_requests: [request, ...current.help_requests] } : current);
+      this.helpReason = '';
+      await this.refreshHelpRequests();
+      await this.refreshAttention();
+      this.notice.set('Запрос на помощь создан');
+    } catch (error) { if (generation === this.detailGeneration) this.fail(error); }
+    finally { this.saving.set(false); }
+  }
+
+  async resolveHelpRequest(request: HelpRequest): Promise<void> {
+    if (this.saving()) return;
+    const generation = this.detailGeneration;
+    this.saving.set(true);
+    this.error.set('');
+    try {
+      const resolved = await this.api.request<HelpRequest>(`/help-requests/${request.id}/resolve`, 'POST');
+      if (generation !== this.detailGeneration) return;
+      this.detail.update(current => current ? {
+        ...current,
+        help_requests: current.help_requests.map(item => item.id === resolved.id ? resolved : item),
+      } : current);
+      await this.refreshHelpRequests();
+      await this.refreshAttention();
+      this.notice.set('Запрос на помощь отмечен решённым');
+    } catch (error) { if (generation === this.detailGeneration) this.fail(error); }
+    finally { this.saving.set(false); }
+  }
+
+  async refreshAttention(): Promise<void> {
+    try {
+      this.attention.set(await this.api.request<AttentionItem[]>('/attention'));
+    } catch (error) { this.fail(error); }
+  }
+
+  async refreshHelpRequests(): Promise<void> {
+    try {
+      this.helpRequests.set(await this.api.request<HelpRequestQueueItem[]>('/help-requests'));
+    } catch (error) { this.fail(error); }
+  }
+
+  hasOpenHelpRequest(task: TaskDetail): boolean {
+    return task.help_requests.some(request => request.status === 'open');
+  }
+
+  reasonLabel(reason: string): string {
+    if (reason === 'open_request') return 'Запрос помощи';
+    if (reason === 'blocked') return 'Заблокирована';
+    if (reason === 'overdue') return 'Просрочена';
+    if (reason === 'today') return 'Срок сегодня';
+    if (reason === 'next_2_days') return 'Срок в ближайшие 2 дня';
+    return reason;
   }
 
   statusLabel(status: string): string { return this.statuses.find(s => s.value === status)?.label ?? status; }

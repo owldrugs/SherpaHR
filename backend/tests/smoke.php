@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/../src/Database.php';
+
 // Black-box API regression checks against a disposable server and database.
 if (!in_array('sqlite', PDO::getAvailableDrivers(), true)) {
     fwrite(STDERR, "This PHP interpreter needs pdo_sqlite. Use the Compose test command from README.\n");
@@ -112,6 +114,154 @@ try {
     [$status, $response] = request('GET', '/api/projects/1/tasks');
     check(count($response['data']) === 6, 'initialization does not duplicate or reset data');
     check(request('GET', '/api/tasks/9999')[0] === 404, 'missing task returns 404');
+
+    [$status, $response] = request('GET', '/api/help-requests');
+    check($status === 200 && $response['data'] === [], 'new database has an empty open help-request queue');
+    [$status, $response] = request('POST', '/api/tasks/1/help-requests', ['reason' => 'Нужен выбор формата обмена'], 2);
+    check($status === 201 && $response['data']['status'] === 'open' && $response['data']['author'] === 'Борис · разработчик', 'project member creates help request');
+    $helpRequestId = $response['data']['id'];
+    check(request('POST', '/api/tasks/1/help-requests', ['reason' => 'Повторная причина'], 3)[0] === 409, 'second open help request is rejected');
+    check(request('POST', '/api/tasks/1/help-requests', ['reason' => ' '], 2)[0] === 422, 'empty help reason is rejected');
+    check(request('POST', '/api/tasks/1/help-requests', ['reason' => null], 2)[0] === 422, 'missing help reason is rejected');
+    check(request('POST', '/api/tasks/10/help-requests', ['reason' => 'Нельзя в архиве'], 2)[0] === 409, 'archive rejects help request');
+    check(request('POST', '/api/tasks/3/help-requests', ['reason' => 'Задача завершена'], 2)[0] === 409, 'done task rejects help request');
+    check(request('POST', '/api/tasks/11/help-requests', ['reason' => 'Чужой проект'], 2)[0] === 404, 'hidden task cannot receive help request');
+    [$status, $response] = request('GET', '/api/help-requests');
+    check($status === 200 && count($response['data']) === 1 && $response['data'][0]['task_id'] === 1, 'Anna sees open help request queue');
+    check(request('POST', '/api/help-requests/' . $helpRequestId . '/resolve', null, 2)[0] === 404, 'non-owner cannot resolve help request');
+    [$status, $response] = request('POST', '/api/help-requests/' . $helpRequestId . '/resolve', null, 1);
+    check($status === 200 && $response['data']['status'] === 'resolved' && $response['data']['resolver'] === 'Анна · руководитель', 'owner resolves help request');
+    check(request('POST', '/api/help-requests/' . $helpRequestId . '/resolve', null, 1)[0] === 409, 'resolved help request cannot be resolved twice');
+    [$status, $response] = request('POST', '/api/tasks/1/help-requests', ['reason' => 'Новая проблема после решения'], 3);
+    check($status === 201 && $response['data']['status'] === 'open', 'new open request can be created after resolution');
+    [$status, $response] = request('GET', '/api/tasks/1');
+    check($status === 200 && count($response['data']['help_requests']) === 2, 'task detail preserves help-request history');
+    check(request('GET', '/api/help-requests', null, 3)[0] === 200, 'non-owner gets an access-filtered empty queue');
+
+    $fixtureDb = new PDO('sqlite:' . $directory . '/test.sqlite');
+    $fixtureDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $fixtureDb->exec("INSERT INTO projects (id,name,description,owner_id,archived) VALUES (6,'Проект без членства владельца','Регрессионный проект',1,0)");
+    $fixtureDb->exec("INSERT INTO tasks (project_id,title,description,status,assignee_id,due_at,updated_at) VALUES (6,'Недоступная задача владельца','Нет записи project_members','blocked',2,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')");
+    $noMembershipTaskId = (int) $fixtureDb->query('SELECT last_insert_rowid()')->fetchColumn();
+    $fixtureDb->exec("INSERT INTO help_requests (task_id,user_id,reason,created_at,status) VALUES (" . $noMembershipTaskId . ",2,'Обращение в проекте без членства','2026-01-01T00:00:00Z','open')");
+    $noMembershipRequestId = (int) $fixtureDb->query('SELECT last_insert_rowid()')->fetchColumn();
+    $fixtureDb = null;
+
+    [$status, $noMembershipAttention] = request('GET', '/api/attention');
+    check($status === 200 && !in_array($noMembershipTaskId, array_column($noMembershipAttention['data'], 'task_id'), true), 'owner without project_members is excluded from attention');
+    [$status, $noMembershipQueue] = request('GET', '/api/help-requests');
+    check($status === 200 && !in_array($noMembershipTaskId, array_column($noMembershipQueue['data'], 'task_id'), true), 'owner without project_members is excluded from help-request queue');
+    check(request('POST', '/api/help-requests/' . $noMembershipRequestId . '/resolve', null, 1)[0] === 404, 'owner without project_members cannot resolve help request');
+
+    $utcNow = new DateTimeImmutable(gmdate('Y-m-d\TH:i:s\Z'), new DateTimeZone('UTC'));
+    $yesterday = $utcNow->modify('-1 day')->format('Y-m-d\TH:i:s\Z');
+    $today = $utcNow->modify('+1 hour')->format('Y-m-d\TH:i:s\Z');
+    $tomorrow = $utcNow->modify('+1 day')->setTime(9, 0, 0)->format('Y-m-d\TH:i:s\Z');
+    $doneDue = $utcNow->modify('-2 days')->format('Y-m-d\TH:i:s\Z');
+
+    [$status, $blockedOverdue] = request('POST', '/api/projects/1/tasks', ['title' => 'Attention blocked overdue', 'status' => 'blocked', 'due_at' => $yesterday], 1);
+    check($status === 201, 'test fixture creates blocked overdue task');
+    [$status, $overdue] = request('POST', '/api/projects/1/tasks', ['title' => 'Attention overdue', 'status' => 'in_progress', 'due_at' => $yesterday], 1);
+    check($status === 201, 'test fixture creates overdue task');
+    [$status, $overdueTie] = request('POST', '/api/projects/1/tasks', ['title' => 'Attention overdue stable sort', 'status' => 'in_progress', 'due_at' => $yesterday], 1);
+    check($status === 201, 'test fixture creates equal-deadline overdue task');
+    [$status, $blocked] = request('POST', '/api/projects/1/tasks', ['title' => 'Attention blocked', 'status' => 'blocked', 'due_at' => $tomorrow], 1);
+    check($status === 201, 'test fixture creates blocked task');
+    [$status, $todayTask] = request('POST', '/api/projects/1/tasks', ['title' => 'Attention today', 'status' => 'open', 'due_at' => $today], 1);
+    check($status === 201, 'test fixture creates today task');
+    [$status, $nextTask] = request('POST', '/api/projects/1/tasks', ['title' => 'Attention next 2 days', 'status' => 'open', 'due_at' => $tomorrow], 1);
+    check($status === 201, 'test fixture creates next-two-days task');
+    [$status, $doneTask] = request('POST', '/api/projects/1/tasks', ['title' => 'Attention done excluded', 'status' => 'done', 'due_at' => $doneDue], 1);
+    check($status === 201, 'test fixture creates done task');
+
+    [$status, $response] = request('GET', '/api/attention');
+    check($status === 200, 'attention endpoint returns successfully');
+    $attention = $response['data'];
+    $ids = array_column($attention, 'task_id');
+    check(count($ids) === count(array_unique($ids)), 'attention overview has no duplicate tasks');
+
+    $task1 = null;
+    foreach ($attention as $item) {
+        if ($item['task_id'] === 1) $task1 = $item;
+    }
+    check($task1 !== null && $task1['priority'] === 1 && in_array('open_request', $task1['reasons'], true) && in_array('blocked', $task1['reasons'], true) && in_array('overdue', $task1['reasons'], true), 'attention merges open-request, blocked and overdue reasons');
+
+    $blockedOverdueId = $blockedOverdue['data']['id'];
+    $overdueId = $overdue['data']['id'];
+    $blockedId = $blocked['data']['id'];
+    $todayId = $todayTask['data']['id'];
+    $nextId = $nextTask['data']['id'];
+    $priorities = [];
+    foreach ($attention as $item) $priorities[$item['task_id']] = $item['priority'];
+    check(($priorities[$blockedOverdueId] ?? 0) === 2, 'blocked overdue task has priority 2');
+    check(($priorities[$overdueId] ?? 0) === 3, 'overdue task has priority 3');
+    $equalDeadlineIds = [];
+    foreach ($attention as $item) {
+        if ($item['priority'] === 3 && $item['due_at'] === $yesterday) $equalDeadlineIds[] = $item['task_id'];
+    }
+    $equalDeadlineSorted = $equalDeadlineIds;
+    sort($equalDeadlineSorted, SORT_NUMERIC);
+    check(count($equalDeadlineIds) >= 2 && $equalDeadlineIds === $equalDeadlineSorted, 'equal-deadline overdue tasks use stable ID ordering');
+    check(($priorities[$blockedId] ?? 0) === 4, 'blocked task has priority 4');
+    check(($priorities[$todayId] ?? 0) === 5, 'today task has priority 5');
+    check(($priorities[$nextId] ?? 0) === 6, 'next-two-days task has priority 6');
+    check(!in_array($doneTask['data']['id'], $ids, true), 'done task is excluded from attention');
+    check(!in_array(10, $ids, true), 'archived project task is excluded from attention');
+
+    $sortedPriorities = array_column($attention, 'priority');
+    $priorityOrdered = true;
+    for ($i = 1, $priorityCount = count($sortedPriorities); $i < $priorityCount; ++$i) {
+        if ($sortedPriorities[$i] < $sortedPriorities[$i - 1]) $priorityOrdered = false;
+    }
+    check($priorityOrdered, 'attention priority groups are ordered');
+
+    [$status, $veraAttention] = request('GET', '/api/attention', null, 3);
+    check($status === 200 && count($veraAttention['data']) === 1 && $veraAttention['data'][0]['project_id'] === 5, 'attention is checked through owner project access');
+
+    $migrationPath = $directory . '/migration-v1.sqlite';
+    $migrationDb = new PDO('sqlite:' . $migrationPath);
+    $migrationDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $migrationDb->exec('PRAGMA foreign_keys=ON');
+    $migrationDb->exec('CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    $migrationDb->exec("INSERT INTO metadata VALUES ('schema_version','1')");
+    $migrationDb->exec('CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)');
+    $migrationDb->exec("INSERT INTO users VALUES (1,'Анна · руководитель')");
+    $migrationDb->exec('CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL, owner_id INTEGER NOT NULL REFERENCES users(id), archived INTEGER NOT NULL DEFAULT 0)');
+    $migrationDb->exec('CREATE TABLE project_members (project_id INTEGER NOT NULL, user_id INTEGER NOT NULL, PRIMARY KEY(project_id,user_id))');
+    $migrationDb->exec('CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT \'\', status TEXT NOT NULL DEFAULT \'open\', assignee_id INTEGER, due_at TEXT, updated_at TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1)');
+    $migrationDb->exec('CREATE TABLE comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, user_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)');
+    $migrationDb->exec('CREATE INDEX tasks_project ON tasks(project_id)');
+    $migrationDb->exec('CREATE INDEX comments_task ON comments(task_id,id)');
+    $migrationDb->exec("INSERT INTO projects VALUES (1,'Сохранённый проект','Данные до миграции',1,0)");
+    $migrationDb->exec("INSERT INTO project_members VALUES (1,1)");
+    $migrationDb->exec("INSERT INTO tasks (id,project_id,title,description,status,assignee_id,due_at,updated_at) VALUES (1,1,'Сохранённая задача','Текст до миграции','open',1,NULL,'2026-01-01T00:00:00Z')");
+    $migrationDb = null;
+    putenv('DB_PATH=' . $migrationPath);
+    $migrated = Database::connect();
+    check($migrated->query("SELECT value FROM metadata WHERE key='schema_version'")->fetchColumn() === '2', 'existing version 1 database migrates to version 2');
+    check((int) $migrated->query("SELECT COUNT(*) FROM tasks WHERE id=1 AND title='Сохранённая задача'")->fetchColumn() === 1, 'migration preserves existing tasks');
+    $migratedAgain = Database::connect();
+    check($migratedAgain->query("SELECT value FROM metadata WHERE key='schema_version'")->fetchColumn() === '2', 'migration is not repeated on version 2');
+
+    $unknownVersionPath = $directory . '/migration-v99.sqlite';
+    $unknownVersionDb = new PDO('sqlite:' . $unknownVersionPath);
+    $unknownVersionDb->exec('CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    $unknownVersionDb->exec("INSERT INTO metadata VALUES ('schema_version','99')");
+    $unknownVersionDb = null;
+    putenv('DB_PATH=' . $unknownVersionPath);
+    $unknownVersionRejected = false;
+    try {
+        Database::connect();
+    } catch (RuntimeException $error) {
+        $unknownVersionRejected = str_contains($error->getMessage(), 'Неподдерживаемая версия схемы');
+    }
+    check($unknownVersionRejected, 'unknown schema version is rejected instead of treated as legacy');
+    $migrated = null;
+    $migratedAgain = null;
+    $unknownVersionDb = null;
+    gc_collect_cycles();
+    putenv('DB_PATH');
+
     check(request('GET', '/api/unknown')[0] === 404, 'unknown route returns 404');
     echo "PASS: $count API checks\n";
 } catch (Throwable $error) {

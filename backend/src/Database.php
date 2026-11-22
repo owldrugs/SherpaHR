@@ -24,17 +24,45 @@ final class Database
         $db->exec('BEGIN IMMEDIATE');
         try {
             $db->exec('CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-            if ($db->query("SELECT value FROM metadata WHERE key = 'schema_version'")->fetchColumn()) {
+            $version = $db->query("SELECT value FROM metadata WHERE key = 'schema_version'")->fetchColumn();
+            if ($version === false) {
+                $db->exec(file_get_contents(__DIR__ . '/../schema.sql'));
+                self::seed($db);
                 $db->exec('COMMIT');
                 return;
             }
-            $db->exec(file_get_contents(__DIR__ . '/../schema.sql'));
-            self::seed($db);
-            $db->exec('COMMIT');
+            if ($version === '1') {
+                self::migrateV1ToV2($db);
+                $db->exec('COMMIT');
+                return;
+            }
+            if ($version === '2') {
+                $db->exec('COMMIT');
+                return;
+            }
+            throw new RuntimeException('Неподдерживаемая версия схемы SQLite: ' . $version);
         } catch (Throwable $error) {
             $db->exec('ROLLBACK');
             throw $error;
         }
+    }
+
+    private static function migrateV1ToV2(PDO $db): void
+    {
+        $db->exec('CREATE TABLE IF NOT EXISTS help_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES tasks(id),
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT \'open\' CHECK(status IN (\'open\',\'resolved\')),
+            resolved_at TEXT,
+            resolved_by INTEGER REFERENCES users(id)
+        )');
+        $db->exec("CREATE UNIQUE INDEX IF NOT EXISTS help_requests_one_open ON help_requests(task_id) WHERE status = 'open'");
+        $db->exec('CREATE INDEX IF NOT EXISTS help_requests_status ON help_requests(status, id)');
+        $db->exec('CREATE INDEX IF NOT EXISTS help_requests_task ON help_requests(task_id, id)');
+        $db->prepare("UPDATE metadata SET value='2' WHERE key='schema_version'")->execute();
     }
 
     private static function seed(PDO $db): void
@@ -88,7 +116,7 @@ final class Database
             $comment->execute($row);
         }
         $meta = $db->prepare('INSERT INTO metadata VALUES (?, ?)');
-        $meta->execute(['schema_version', '1']);
+        $meta->execute(['schema_version', '2']);
         $meta->execute(['seeded_at', $stamp('+0 seconds')]);
     }
 }
